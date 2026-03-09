@@ -1,130 +1,118 @@
-# scrape.py
-import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
-import time
+# sheets.py
+import os
 import json
-import re
 import logging
-import random
+from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s'
-)
+logger = logging.getLogger(__name__)
 
-BASE_DOMAIN = "https://www.bringo.ma"
-BASE_URL = "https://www.bringo.ma/fr_MA/store/carrefour-hypermarket-carrefour-sidi-maarouf/mon-marche-8"
-STORE_NAME = "Bringo"
-CITY_STORE = "Carrefour Sidi Maarouf"
-CATEGORY_NAME = "Mon Marche"
+# ── Google Sheets config ──────────────────────────────────────────────────────
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0"})
+# Sheet columns (must match the order in _row_from_product)
+HEADERS = [
+    "product_id", "variation_id", "name",
+    "original_price", "promo_price", "discount_percent",
+    "weight_g", "price_per_kg", "product_url",
+    "store", "city_store", "category", "page", "date"
+]
 
 
-def run():
-    all_data = []
-    page = 1
-    last_page_product_ids = []
+def _get_client() -> gspread.Client:
+    """
+    Build a gspread client from credentials.
+    Priority:
+      1. GOOGLE_CREDENTIALS_JSON env var  (JSON string — ideal for Render)
+      2. GOOGLE_CREDENTIALS_FILE env var  (path to a local .json file)
+    """
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE")
 
-    while True:
-        page_start_time = time.time()
-        url = BASE_URL if page == 1 else f"{BASE_URL}?page={page}"
+    if creds_json:
+        info = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    elif creds_file:
+        creds = Credentials.from_service_account_file(creds_file, scopes=SCOPES)
+    else:
+        raise EnvironmentError(
+            "No Google credentials found. "
+            "Set GOOGLE_CREDENTIALS_JSON or GOOGLE_CREDENTIALS_FILE."
+        )
 
-        logging.info(f"Scraping page {page} -> {url}")
-        try:
-            response = session.get(url, timeout=10)
-        except Exception as e:
-            logging.error(f"Request failed: {e}")
-            break
+    return gspread.authorize(creds)
 
-        if response.status_code != 200:
-            logging.warning(f"Non-200 status: {response.status_code}. Stopping.")
-            break
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        products = soup.find_all("div", class_="box-product")
-        logging.info(f"Page {page} | Products found: {len(products)}")
+def _get_or_create_worksheet(
+    spreadsheet: gspread.Spreadsheet,
+    tab_name: str
+) -> gspread.Worksheet:
+    """Return the worksheet with tab_name, creating it (with headers) if absent."""
+    try:
+        ws = spreadsheet.worksheet(tab_name)
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=tab_name, rows=5000, cols=len(HEADERS))
+        ws.append_row(HEADERS, value_input_option="RAW")
+        logger.info(f"Created new worksheet: {tab_name}")
+    return ws
 
-        if not products:
-            logging.info("No products found. Stopping.")
-            break
 
-        # Pagination end check
-        current_ids = [p.get("data-cnstrc-item-id") for p in products]
-        if page > 1 and current_ids == last_page_product_ids:
-            logging.warning("Pagination end detected (repeated products).")
-            break
-        last_page_product_ids = current_ids
+def _row_from_product(p: dict) -> list:
+    """Convert a product dict to an ordered list matching HEADERS."""
+    return [
+        p.get("product_id"),
+        p.get("variation_id"),
+        p.get("name"),
+        p.get("original_price"),
+        p.get("promo_price"),
+        p.get("discount_percent"),
+        p.get("weight_g"),
+        p.get("price_per_kg"),
+        p.get("product_url"),
+        p.get("store"),
+        p.get("city_store"),
+        p.get("category"),
+        p.get("page"),
+        p.get("date"),
+    ]
 
-        # Product loop
-        for product in products:
-            product_id = product.get("data-cnstrc-item-id")
-            variation_id = product.get("data-cnstrc-item-variation-id")
-            name = product.get("data-cnstrc-item-name")
 
-            product_url = None
-            weight_g = None
-            price_per_kg = None
-            original_price = None
-            promo_price = None
-            discount_percent = None
+def save_to_sheets(products: list[dict]) -> int:
+    """
+    Append scraped products to Google Sheets.
 
-            # URL
-            link_tag = product.find("a", class_="bringo-product-name")
-            if link_tag:
-                href = link_tag.get("href")
-                product_url = BASE_DOMAIN + href if href else None
+    Sheet layout:
+      • One spreadsheet identified by env var GOOGLE_SHEET_ID
+        (share it with the service-account email first!)
+      • One tab per scrape date  →  e.g. "2026-03-09"
+        (change TAB_MODE below to "fixed" to always use a single tab)
 
-                # Price from onclick JSON
-                onclick_data = link_tag.get("onclick", "")
-                raw_json = re.search(r'\{.*\}', onclick_data)
-                if raw_json:
-                    try:
-                        data_json = json.loads(raw_json.group())
-                        original_price = float(data_json.get("initial_price", 0)) / 100
-                        promo_price = float(data_json.get("price", 0)) / 100
-                        discount_percent = data_json.get("discount_rate")
-                    except:
-                        pass
+    Returns the number of rows written.
+    """
+    if not products:
+        return 0
 
-            if not original_price:
-                original_price = promo_price
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        raise EnvironmentError("GOOGLE_SHEET_ID env var is not set.")
 
-            # Weight detection
-            if name:
-                match = re.search(r'(\d+(?:\.\d+)?)\s*(kg|g)', name.lower())
-                if match:
-                    qty, unit = match.groups()
-                    qty = float(qty)
-                    weight_g = qty * 1000 if unit == "kg" else qty
+    # Tab strategy: daily tab  (set to any fixed string for a single tab)
+    TAB_MODE = os.environ.get("SHEETS_TAB_MODE", "daily")   # "daily" | "fixed"
+    FIXED_TAB = os.environ.get("SHEETS_TAB_NAME", "Products")
 
-            # Price per kg
-            if weight_g and promo_price:
-                price_per_kg = round((promo_price / weight_g) * 1000, 2)
+    tab_name = datetime.today().strftime("%Y-%m-%d") if TAB_MODE == "daily" else FIXED_TAB
 
-            if product_id and promo_price:
-                all_data.append({
-                    "product_id": product_id,
-                    "variation_id": variation_id,
-                    "name": name,
-                    "original_price": original_price,
-                    "promo_price": promo_price,
-                    "discount_percent": discount_percent,
-                    "weight_g": weight_g,
-                    "price_per_kg": price_per_kg,
-                    "product_url": product_url,
-                    "store": STORE_NAME,
-                    "city_store": CITY_STORE,
-                    "category": CATEGORY_NAME,
-                    "page": page,
-                    "date": datetime.today().strftime("%Y-%m-%d")
-                })
+    client = _get_client()
+    spreadsheet = client.open_by_key(sheet_id)
+    ws = _get_or_create_worksheet(spreadsheet, tab_name)
 
-        logging.info(f"Page {page} | Collected so far: {len(all_data)}")
-        logging.info(f"Page {page} | Time: {round(time.time() - page_start_time, 2)} sec")
-        page += 1
-        time.sleep(random.uniform(1.5, 3.5))
+    # Build rows and batch-append (much faster than one row at a time)
+    rows = [_row_from_product(p) for p in products]
+    ws.append_rows(rows, value_input_option="USER_ENTERED")
 
-    return all_data
+    logger.info(f"Saved {len(rows)} rows to sheet '{sheet_id}' tab '{tab_name}'")
+    return len(rows)
