@@ -1,6 +1,7 @@
 # app.py
 from flask import Flask, jsonify
 from scrape import run
+from sheets import save_to_sheets
 
 app = Flask(__name__)
 
@@ -8,7 +9,19 @@ app = Flask(__name__)
 def scrape_endpoint():
     try:
         data = run()
-        return jsonify({"status": "success", "products": data})
+        if data:
+            rows_saved = save_to_sheets(data)
+            return jsonify({
+                "status": "success",
+                "products_scraped": len(data),
+                "rows_saved_to_sheets": rows_saved
+            })
+        else:
+            return jsonify({
+                "status": "success",
+                "products_scraped": 0,
+                "message": "No products found."
+            })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
