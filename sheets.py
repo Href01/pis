@@ -20,24 +20,17 @@ HEADERS = [
     "store", "city_store", "category", "page", "date"
 ]
 
-
 def _get_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE")
-
     if creds_json:
         info = json.loads(creds_json)
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     elif creds_file:
         creds = Credentials.from_service_account_file(creds_file, scopes=SCOPES)
     else:
-        raise EnvironmentError(
-            "No Google credentials found. "
-            "Set GOOGLE_CREDENTIALS_JSON or GOOGLE_CREDENTIALS_FILE."
-        )
-
+        raise EnvironmentError("No Google credentials found. Set GOOGLE_CREDENTIALS_JSON or GOOGLE_CREDENTIALS_FILE.")
     return gspread.authorize(creds)
-
 
 def _get_or_create_worksheet(spreadsheet, tab_name):
     try:
@@ -47,7 +40,6 @@ def _get_or_create_worksheet(spreadsheet, tab_name):
         ws.append_row(HEADERS, value_input_option="RAW")
         logger.info(f"Created new worksheet: {tab_name}")
     return ws
-
 
 def _row_from_product(p):
     return [
@@ -67,37 +59,19 @@ def _row_from_product(p):
         p.get("date"),
     ]
 
-
 def save_to_sheets(products):
     if not products:
         return 0
-
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     if not sheet_id:
         raise EnvironmentError("GOOGLE_SHEET_ID env var is not set.")
-
     TAB_MODE = os.environ.get("SHEETS_TAB_MODE", "daily")
     FIXED_TAB = os.environ.get("SHEETS_TAB_NAME", "Products")
-
     tab_name = datetime.today().strftime("%Y-%m-%d") if TAB_MODE == "daily" else FIXED_TAB
-
     client = _get_client()
     spreadsheet = client.open_by_key(sheet_id)
     ws = _get_or_create_worksheet(spreadsheet, tab_name)
-
     rows = [_row_from_product(p) for p in products]
     ws.append_rows(rows, value_input_option="USER_ENTERED")
-
     logger.info(f"Saved {len(rows)} rows to sheet '{sheet_id}' tab '{tab_name}'")
     return len(rows)
-```
-
----
-
-**`requirements.txt`**
-```
-flask
-requests
-beautifulsoup4
-gspread
-google-auth
