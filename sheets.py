@@ -8,13 +8,11 @@ from google.oauth2.service_account import Credentials
 
 logger = logging.getLogger(__name__)
 
-# ── Google Sheets config ──────────────────────────────────────────────────────
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Sheet columns (must match the order in _row_from_product)
 HEADERS = [
     "product_id", "variation_id", "name",
     "original_price", "promo_price", "discount_percent",
@@ -23,13 +21,7 @@ HEADERS = [
 ]
 
 
-def _get_client() -> gspread.Client:
-    """
-    Build a gspread client from credentials.
-    Priority:
-      1. GOOGLE_CREDENTIALS_JSON env var  (JSON string — ideal for Render)
-      2. GOOGLE_CREDENTIALS_FILE env var  (path to a local .json file)
-    """
+def _get_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE")
 
@@ -47,11 +39,7 @@ def _get_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
-def _get_or_create_worksheet(
-    spreadsheet: gspread.Spreadsheet,
-    tab_name: str
-) -> gspread.Worksheet:
-    """Return the worksheet with tab_name, creating it (with headers) if absent."""
+def _get_or_create_worksheet(spreadsheet, tab_name):
     try:
         ws = spreadsheet.worksheet(tab_name)
     except gspread.WorksheetNotFound:
@@ -61,8 +49,7 @@ def _get_or_create_worksheet(
     return ws
 
 
-def _row_from_product(p: dict) -> list:
-    """Convert a product dict to an ordered list matching HEADERS."""
+def _row_from_product(p):
     return [
         p.get("product_id"),
         p.get("variation_id"),
@@ -81,18 +68,7 @@ def _row_from_product(p: dict) -> list:
     ]
 
 
-def save_to_sheets(products: list[dict]) -> int:
-    """
-    Append scraped products to Google Sheets.
-
-    Sheet layout:
-      • One spreadsheet identified by env var GOOGLE_SHEET_ID
-        (share it with the service-account email first!)
-      • One tab per scrape date  →  e.g. "2026-03-09"
-        (change TAB_MODE below to "fixed" to always use a single tab)
-
-    Returns the number of rows written.
-    """
+def save_to_sheets(products):
     if not products:
         return 0
 
@@ -100,8 +76,7 @@ def save_to_sheets(products: list[dict]) -> int:
     if not sheet_id:
         raise EnvironmentError("GOOGLE_SHEET_ID env var is not set.")
 
-    # Tab strategy: daily tab  (set to any fixed string for a single tab)
-    TAB_MODE = os.environ.get("SHEETS_TAB_MODE", "daily")   # "daily" | "fixed"
+    TAB_MODE = os.environ.get("SHEETS_TAB_MODE", "daily")
     FIXED_TAB = os.environ.get("SHEETS_TAB_NAME", "Products")
 
     tab_name = datetime.today().strftime("%Y-%m-%d") if TAB_MODE == "daily" else FIXED_TAB
@@ -110,9 +85,19 @@ def save_to_sheets(products: list[dict]) -> int:
     spreadsheet = client.open_by_key(sheet_id)
     ws = _get_or_create_worksheet(spreadsheet, tab_name)
 
-    # Build rows and batch-append (much faster than one row at a time)
     rows = [_row_from_product(p) for p in products]
     ws.append_rows(rows, value_input_option="USER_ENTERED")
 
     logger.info(f"Saved {len(rows)} rows to sheet '{sheet_id}' tab '{tab_name}'")
     return len(rows)
+```
+
+---
+
+**`requirements.txt`**
+```
+flask
+requests
+beautifulsoup4
+gspread
+google-auth
