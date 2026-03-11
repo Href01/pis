@@ -3,6 +3,7 @@ import time
 import logging
 from datetime import datetime
 from flask import Flask, jsonify
+from flask_cors import CORS
 from scrape import run
 from sheets import save_to_sheets
 
@@ -13,6 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)  # Allow all origins
 
 
 @app.route("/")
@@ -36,13 +38,10 @@ def health():
 def scrape_endpoint():
     start_time = time.time()
     today = datetime.today().strftime("%Y-%m-%d")
-
     logger.info("Scrape triggered")
-
     try:
         data = run()
         duration = round(time.time() - start_time, 2)
-
         if not data:
             logger.warning("Scrape returned no products")
             return jsonify({
@@ -51,12 +50,9 @@ def scrape_endpoint():
                 "message": "No products found.",
                 "duration_seconds": duration
             })
-
         rows_saved = save_to_sheets(data)
         pages = data[-1]["page"] if data else 0
-
         logger.info(f"Scrape complete | products={len(data)} | pages={pages} | duration={duration}s")
-
         return jsonify({
             "status": "success",
             "products_scraped": len(data),
@@ -68,7 +64,6 @@ def scrape_endpoint():
             "category": data[0]["category"],
             "duration_seconds": duration
         })
-
     except Exception as e:
         duration = round(time.time() - start_time, 2)
         logger.error(f"Scrape failed after {duration}s: {e}", exc_info=True)
