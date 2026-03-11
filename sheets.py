@@ -37,7 +37,6 @@ def _get_or_create_worksheet(spreadsheet, tab_name):
         ws = spreadsheet.worksheet(tab_name)
     except gspread.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(title=tab_name, rows=5000, cols=len(HEADERS))
-        ws.append_row(HEADERS, value_input_option="RAW")
         logger.info(f"Created new worksheet: {tab_name}")
     return ws
 
@@ -71,6 +70,11 @@ def save_to_sheets(products):
     client = _get_client()
     spreadsheet = client.open_by_key(sheet_id)
     ws = _get_or_create_worksheet(spreadsheet, tab_name)
+
+    # Clear today's tab and rewrite headers + fresh data (prevents duplicates on re-runs)
+    ws.clear()
+    ws.append_row(HEADERS, value_input_option="RAW")
+
     rows = [_row_from_product(p) for p in products]
     ws.append_rows(rows, value_input_option="USER_ENTERED")
     logger.info(f"Saved {len(rows)} rows to sheet '{sheet_id}' tab '{tab_name}'")
